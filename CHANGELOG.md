@@ -2,6 +2,11 @@
 
 All notable changes to `/watch` are documented here.
 
+## [1.1.0] — 2026-05-05
+
+### Added
+- **`--no-frames` flag** on `watch.py`: skip frame extraction entirely and return a transcript-only report. Saves ~50-80k image tokens on talking-head content (interviews, podcasts, fireside chats) where the visuals are just two people on Zoom and add no signal. SKILL.md now nudges the caller to default to `--no-frames` for podcast/interview titles and re-run with frames only if the transcript references something visual.
+
 ## [1.0.0] — 2026-05-05
 
 ### ScrappyLabs fork

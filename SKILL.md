@@ -83,6 +83,7 @@ Optional flags:
 - `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
 - `--backend local|cloud|groq|openai` — force a specific ASR backend. Default: `local` if `~/bin/listen` exists, else `cloud` (Groq with OpenAI fallback). `--whisper {groq,openai}` is kept as a backwards-compat alias.
 - `--no-asr` — disable the ASR fallback entirely (frames-only if no captions). `--no-whisper` is kept as a backwards-compat alias.
+- `--no-frames` — skip frame extraction; transcript-only output. **Use this for talking-head content** — interviews, podcasts, fireside chats, panel discussions, audio books with a static cover. Two heads on Zoom for 50 minutes burns ~50-80k image tokens to tell you "yep, two heads on Zoom." When the visuals add no signal, drop them. Heuristic: if the title/channel says "podcast", "interview", "fireside", "AMA", or "in conversation with", default to `--no-frames`. If you're unsure, the safer bet is to start with `--no-frames` and re-run with frames if the transcript references something visual ("look at this graph", "as you can see on screen").
 
 ### Focusing on a section (higher frame rate)
 

@@ -30,6 +30,15 @@ def main() -> int:
     ap.add_argument("--max-frames", type=int, default=80, help="Cap on frame count (default 80, hard max 100)")
     ap.add_argument("--resolution", type=int, default=512, help="Frame width in pixels (default 512)")
     ap.add_argument("--fps", type=float, default=None, help="Override auto-fps")
+    ap.add_argument(
+        "--no-frames",
+        action="store_true",
+        help=(
+            "Skip frame extraction entirely (transcript-only). Use for talking-head content "
+            "(interviews, podcasts, fireside chats) where visuals add no signal. Saves ~50-80k "
+            "image tokens vs the default 80-frame scan."
+        ),
+    )
     ap.add_argument("--start", type=str, default=None, help="Range start (SS, MM:SS, or HH:MM:SS)")
     ap.add_argument("--end", type=str, default=None, help="Range end (SS, MM:SS, or HH:MM:SS)")
     ap.add_argument("--out-dir", type=str, default=None, help="Working directory (default: tmp)")
@@ -87,29 +96,35 @@ def main() -> int:
     effective_duration = max(0.0, effective_end - effective_start)
     focused = start_sec is not None or end_sec is not None
 
-    if focused:
-        fps, target = auto_fps_focus(effective_duration, max_frames=max_frames)
+    if args.no_frames:
+        fps = 0.0
+        target = 0
+        frames: list[dict] = []
+        print("[watch] --no-frames set; skipping frame extraction", file=sys.stderr)
     else:
-        fps, target = auto_fps(effective_duration, max_frames=max_frames)
-    if args.fps is not None:
-        fps = min(args.fps, MAX_FPS)
-        target = max(1, int(round(fps * effective_duration)))
+        if focused:
+            fps, target = auto_fps_focus(effective_duration, max_frames=max_frames)
+        else:
+            fps, target = auto_fps(effective_duration, max_frames=max_frames)
+        if args.fps is not None:
+            fps = min(args.fps, MAX_FPS)
+            target = max(1, int(round(fps * effective_duration)))
 
-    scope = (
-        f"{format_time(effective_start)}-{format_time(effective_end)} ({effective_duration:.1f}s)"
-        if focused else f"full {effective_duration:.1f}s"
-    )
-    print(f"[watch] extracting ~{target} frames at {fps:.3f} fps over {scope}…", file=sys.stderr)
+        scope = (
+            f"{format_time(effective_start)}-{format_time(effective_end)} ({effective_duration:.1f}s)"
+            if focused else f"full {effective_duration:.1f}s"
+        )
+        print(f"[watch] extracting ~{target} frames at {fps:.3f} fps over {scope}…", file=sys.stderr)
 
-    frames = extract(
-        video_path,
-        work / "frames",
-        fps=fps,
-        resolution=args.resolution,
-        max_frames=max_frames,
-        start_seconds=start_sec,
-        end_seconds=end_sec,
-    )
+        frames = extract(
+            video_path,
+            work / "frames",
+            fps=fps,
+            resolution=args.resolution,
+            max_frames=max_frames,
+            start_seconds=start_sec,
+            end_seconds=end_sec,
+        )
 
     transcript_segments: list[dict] = []
     transcript_text: str | None = None
@@ -170,8 +185,11 @@ def main() -> int:
     if meta.get("width") and meta.get("height"):
         print(f"- **Resolution:** {meta['width']}x{meta['height']} ({meta.get('codec') or 'unknown codec'})")
     mode = "focused" if focused else "full"
-    print(f"- **Frames:** {len(frames)} @ {fps:.3f} fps, {mode} mode (budget {target}, max {max_frames})")
-    print(f"- **Frame size:** {args.resolution}px wide")
+    if args.no_frames:
+        print("- **Frames:** skipped (`--no-frames`) — transcript-only mode")
+    else:
+        print(f"- **Frames:** {len(frames)} @ {fps:.3f} fps, {mode} mode (budget {target}, max {max_frames})")
+        print(f"- **Frame size:** {args.resolution}px wide")
     if transcript_segments:
         in_range = " in range" if focused else ""
         print(
@@ -181,7 +199,7 @@ def main() -> int:
     else:
         print("- **Transcript:** none available")
 
-    if not focused and full_duration > 600:
+    if not args.no_frames and not focused and full_duration > 600:
         mins = int(full_duration // 60)
         print()
         print(
@@ -190,18 +208,24 @@ def main() -> int:
             "re-run with `--start HH:MM:SS --end HH:MM:SS` to zoom into a specific section."
         )
 
-    print()
-    print("## Frames")
-    print()
-    print(f"Frames live at: `{work / 'frames'}`")
-    print()
-    print(
-        "**Read each frame path below with the Read tool to view the image.** "
-        "Frames are in chronological order; `t=MM:SS` is the absolute timestamp in the source video."
-    )
-    print()
-    for frame in frames:
-        print(f"- `{frame['path']}` (t={format_time(frame['timestamp_seconds'])})")
+    if args.no_frames:
+        print()
+        print("## Frames")
+        print()
+        print("_Skipped — `--no-frames` was set. Answer from the transcript alone._")
+    else:
+        print()
+        print("## Frames")
+        print()
+        print(f"Frames live at: `{work / 'frames'}`")
+        print()
+        print(
+            "**Read each frame path below with the Read tool to view the image.** "
+            "Frames are in chronological order; `t=MM:SS` is the absolute timestamp in the source video."
+        )
+        print()
+        for frame in frames:
+            print(f"- `{frame['path']}` (t={format_time(frame['timestamp_seconds'])})")
 
     print()
     print("## Transcript")
@@ -220,12 +244,18 @@ def main() -> int:
         print(f"_No transcript lines fell inside {format_time(effective_start)} → {format_time(effective_end)}._")
     else:
         setup_py = SCRIPT_DIR / "setup.py"
-        print(
-            "_No transcript available — proceed with frames only. "
-            "Captions were missing and ASR was unavailable "
-            "(`~/bin/listen` not installed, no API key set, or `--no-asr` was used). "
-            f"Run `python3 {setup_py}` to configure, then re-run._"
-        )
+        if args.no_frames:
+            tail = (
+                "Nothing to report — `--no-frames` was set and no transcript could be obtained. "
+                "Drop `--no-frames` to fall back to a frame-only scan, or fix the ASR backend."
+            )
+        else:
+            tail = (
+                "No transcript available — proceed with frames only. "
+                "Captions were missing and ASR was unavailable "
+                "(`~/bin/listen` not installed, no API key set, or `--no-asr` was used)."
+            )
+        print(f"_{tail} Run `python3 {setup_py}` to configure, then re-run._")
 
     print()
     print("---")
