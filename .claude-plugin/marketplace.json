@@ -1,0 +1,22 @@
+{
+  "name": "watch",
+  "metadata": {
+    "description": "Give Claude a video input. /watch downloads, extracts frames, transcribes (local-first via fleet ASR, optional cloud fallback), and hands it all to Claude."
+  },
+  "owner": {
+    "name": "ScrappyLabs",
+    "url": "https://scrappylabs.ai"
+  },
+  "plugins": [
+    {
+      "name": "watch",
+      "description": "Watch a video (URL or local path). Downloads with yt-dlp, extracts frames with ffmpeg, transcribes via captions or local-first ASR (~/bin/listen) with cloud Whisper fallback.",
+      "author": {
+        "name": "ScrappyLabs"
+      },
+      "source": "./",
+      "category": "productivity",
+      "homepage": "https://github.com/scrappylabsai/watch"
+    }
+  ]
+}

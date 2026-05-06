@@ -1,0 +1,28 @@
+{
+  "name": "watch",
+  "version": "1.0.0",
+  "description": "Let Claude watch a video. Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls captions or routes audio through local-first ASR (~/bin/listen, fleet Qwen3-ASR) with optional cloud Whisper fallback. ScrappyLabs fork of bradautomates/claude-video.",
+  "author": {
+    "name": "ScrappyLabs",
+    "url": "https://scrappylabs.ai"
+  },
+  "homepage": "https://github.com/scrappylabsai/watch",
+  "repository": "https://github.com/scrappylabsai/watch",
+  "license": "MIT",
+  "keywords": [
+    "video",
+    "watch",
+    "youtube",
+    "vimeo",
+    "tiktok",
+    "transcription",
+    "whisper",
+    "qwen3-asr",
+    "local-first",
+    "yt-dlp",
+    "ffmpeg",
+    "multimodal",
+    "frames",
+    "scrappylabs"
+  ]
+}
