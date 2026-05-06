@@ -22,6 +22,25 @@ def is_url(source: str) -> bool:
     return parsed.scheme in ("http", "https")
 
 
+def _find_sibling_subtitle(video: Path) -> Path | None:
+    """Look for a VTT/SRT next to the video, preferring English variants.
+
+    yt-dlp names subtitles like `video.en.vtt`, `video.en-orig.vtt` next to
+    `video.mp4`. Anyone re-running watch on a previously-downloaded file should
+    get those captions instead of having to re-transcribe.
+    """
+    parent = video.parent
+    stem = video.stem
+    candidates: list[Path] = []
+    for ext in (".vtt", ".srt"):
+        candidates.extend(parent.glob(f"{stem}*{ext}"))
+    if not candidates:
+        return None
+    candidates.sort()
+    preferred = [c for c in candidates if ".en" in c.name]
+    return preferred[0] if preferred else candidates[0]
+
+
 def resolve_local(path: str) -> dict:
     p = Path(path).expanduser().resolve()
     if not p.exists():
@@ -31,9 +50,12 @@ def resolve_local(path: str) -> dict:
             f"[watch] warning: {p.suffix} is not a known video extension, proceeding anyway",
             file=sys.stderr,
         )
+    subtitle = _find_sibling_subtitle(p)
+    if subtitle:
+        print(f"[watch] using sibling subtitle: {subtitle.name}", file=sys.stderr)
     return {
         "video_path": str(p),
-        "subtitle_path": None,
+        "subtitle_path": str(subtitle) if subtitle else None,
         "info": {"title": p.name, "url": str(p)},
         "downloaded": False,
     }

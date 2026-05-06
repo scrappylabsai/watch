@@ -167,6 +167,48 @@ def extract_audio(video_path: str, out_path: Path) -> Path:
     return out_path
 
 
+# Chunking thresholds: keep audio under each backend's upload cap.
+# Local `listen` route returns HTTP 400 over 10 MB; Whisper APIs cap at 25 MB.
+# Chunk durations chosen so each chunk's mp3 (64 kbps mono) lands well under cap.
+LOCAL_MAX_BYTES = 9 * 1024 * 1024
+CLOUD_MAX_BYTES = 24 * 1024 * 1024
+LOCAL_CHUNK_SECONDS = 600    # 10 min @ 64 kbps ≈ 4.7 MB
+CLOUD_CHUNK_SECONDS = 1500   # 25 min @ 64 kbps ≈ 11.7 MB
+
+
+def _split_audio(audio_path: Path, chunk_seconds: int) -> list[Path]:
+    """Split mp3 into time-based chunks. Returns chunk paths in order.
+
+    Uses `-c copy` so it's near-instant; mp3 frame boundaries cause sub-second
+    drift per chunk, which is fine for ASR alignment over multi-minute spans.
+    """
+    out_dir = audio_path.parent / f"{audio_path.stem}_chunks"
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True)
+
+    pattern = str(out_dir / f"{audio_path.stem}_%03d.mp3")
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-y",
+        "-i", str(audio_path),
+        "-f", "segment",
+        "-segment_time", str(chunk_seconds),
+        "-c", "copy",
+        pattern,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise SystemExit(f"ffmpeg audio split failed: {result.stderr.strip()}")
+
+    chunks = sorted(out_dir.glob(f"{audio_path.stem}_*.mp3"))
+    if not chunks:
+        raise SystemExit(f"ffmpeg produced no audio chunks in {out_dir}")
+    return chunks
+
+
 def _segments_from_response(data: dict) -> list[dict]:
     """Convert verbose_json (Whisper-shape) into our {start,end,text} segments.
 
@@ -359,13 +401,36 @@ def _retry_after(exc: urllib.error.HTTPError) -> float | None:
 
 # ---------------- public entry ----------------
 
+def _transcribe_chunk(audio_path: Path, backend: str, api_key: str | None) -> list[dict]:
+    """Single-shot transcription for one audio file. Backend-aware."""
+    if backend == "local":
+        return _transcribe_local(audio_path)
+    if backend == "groq":
+        size_kb = audio_path.stat().st_size / 1024
+        print(f"[watch] audio: {size_kb:.0f} kB — uploading to Groq Whisper…", file=sys.stderr)
+        response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
+        return _segments_from_response(response)
+    if backend == "openai":
+        size_kb = audio_path.stat().st_size / 1024
+        print(f"[watch] audio: {size_kb:.0f} kB — uploading to OpenAI Whisper…", file=sys.stderr)
+        response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
+        return _segments_from_response(response)
+    raise SystemExit(f"Unknown ASR backend: {backend}")
+
+
 def transcribe_video(
     video_path: str,
     audio_out: Path,
     backend: str | None = None,
     api_key: str | None = None,
 ) -> tuple[list[dict], str]:
-    """Run extract → transcribe pipeline. Returns (segments, backend_used)."""
+    """Run extract → transcribe pipeline. Returns (segments, backend_used).
+
+    If the extracted audio exceeds the backend's upload limit, splits it into
+    time-based chunks, transcribes each, and stitches segments back together
+    with per-chunk timestamp offsets so the final transcript is a contiguous
+    timeline matching the source video.
+    """
     if backend is None or (backend != "local" and api_key is None):
         detected_backend, detected_key = resolve_backend(backend)
         backend = backend or detected_backend
@@ -387,20 +452,34 @@ def transcribe_video(
 
     print(f"[watch] extracting audio for ASR ({backend})…", file=sys.stderr)
     audio_path = extract_audio(video_path, audio_out)
-    size_kb = audio_path.stat().st_size / 1024
+    size = audio_path.stat().st_size
 
     if backend == "local":
-        segments = _transcribe_local(audio_path)
-    elif backend == "groq":
-        print(f"[watch] audio: {size_kb:.0f} kB — uploading to Groq Whisper…", file=sys.stderr)
-        response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
-        segments = _segments_from_response(response)
-    elif backend == "openai":
-        print(f"[watch] audio: {size_kb:.0f} kB — uploading to OpenAI Whisper…", file=sys.stderr)
-        response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
-        segments = _segments_from_response(response)
+        threshold, chunk_seconds = LOCAL_MAX_BYTES, LOCAL_CHUNK_SECONDS
     else:
-        raise SystemExit(f"Unknown ASR backend: {backend}")
+        threshold, chunk_seconds = CLOUD_MAX_BYTES, CLOUD_CHUNK_SECONDS
+
+    if size <= threshold:
+        segments = _transcribe_chunk(audio_path, backend, api_key)
+    else:
+        chunks = _split_audio(audio_path, chunk_seconds)
+        print(
+            f"[watch] audio {size // 1024} kB exceeds {backend} limit "
+            f"({threshold // 1024} kB) — split into {len(chunks)} chunks of ~{chunk_seconds}s",
+            file=sys.stderr,
+        )
+        segments = []
+        for idx, chunk in enumerate(chunks):
+            offset = idx * chunk_seconds
+            print(
+                f"[watch] chunk {idx + 1}/{len(chunks)} (offset {offset}s)…",
+                file=sys.stderr,
+            )
+            chunk_segs = _transcribe_chunk(chunk, backend, api_key)
+            for seg in chunk_segs:
+                seg["start"] = round(seg["start"] + offset, 2)
+                seg["end"] = round(seg["end"] + offset, 2)
+            segments.extend(chunk_segs)
 
     if not segments:
         raise SystemExit(f"{backend} returned no transcript segments")

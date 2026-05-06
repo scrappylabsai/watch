@@ -2,6 +2,12 @@
 
 All notable changes to `/watch` are documented here.
 
+## [1.2.0] — 2026-05-05
+
+### Added
+- **Sibling-subtitle pickup for local files**: `resolve_local()` now searches the video's parent directory for matching `.vtt`/`.srt` files (e.g. yt-dlp's `video.en.vtt` next to `video.mp4`), preferring English variants. Re-running `watch` on a previously-downloaded file now picks up the cached captions instead of falling through to ASR.
+- **Audio chunking when over backend upload limit**: `transcribe_video()` now splits oversized audio into time-based chunks (10 min for local listen, 25 min for cloud Whisper), transcribes each, and stitches segments back together with per-chunk timestamp offsets. Local `~/bin/listen` returns HTTP 400 on files >10 MB; this fixes the failure mode for any video over ~21 minutes routed through local ASR. Cloud limit is 25 MB (~52 min); chunking covers anything longer.
+
 ## [1.1.0] — 2026-05-05
 
 ### Added
