@@ -33,7 +33,7 @@ With `/watch` you can paste a URL or a local path, ask a question, and Claude do
 
 The original was built to keep up with viral content — paste a URL and ask how a creator structured the hook, what's on screen in the first three seconds, why it worked. Same use case, plus summarization of long-form video.
 
-The fork rewires the audio path. Upstream uploads audio to Groq or OpenAI Whisper. The ScrappyLabs fleet runs Qwen3-ASR locally on a Spark, fronted by `~/bin/listen`. Routing through that gives us $0 transcription, no per-call cost when working from a fleet node, and a graceful API fallback when off-fleet. Cloud Whisper still works — it's just opt-in via `--backend cloud`.
+The fork rewires the audio path. Upstream uploads audio to Groq or OpenAI Whisper — pay per call. The ScrappyLabs fleet runs Qwen3-ASR on Sparks fronted by `~/bin/listen`, which prefers a local socket and otherwise falls through to `api.scrappylabs.ai` (which round-robins back to the same Sparks). Either route, transcription runs on hardware we own — $0 marginal cost. Cloud Whisper still works as an opt-in via `--backend cloud`, mainly for users without our fleet.
 
 ## What people actually use it for
 
@@ -59,10 +59,10 @@ The fork rewires the audio path. Upstream uploads audio to Groq or OpenAI Whispe
 
 | Backend | Trigger | Cost | Notes |
 |---------|---------|------|-------|
-| `local` | `~/bin/listen` is on PATH | Free on the fleet, flat-rate via API | Default. Local Qwen3-ASR endpoint, with `api.scrappylabs.ai` fallback baked into `listen`. |
-| `groq` | `GROQ_API_KEY` set | Cheap, fast | `whisper-large-v3`. Used when local listen isn't installed, or `--backend groq`. |
-| `openai` | `OPENAI_API_KEY` set | Standard | `whisper-1`. Used as last cloud fallback, or `--backend openai`. |
-| `cloud` | Either key set | Cloud | Alias: prefer Groq, fall back to OpenAI. |
+| `local` | `~/bin/listen` is on PATH | $0 | Default. Routes to a local Qwen3-ASR endpoint, falling back to `api.scrappylabs.ai` which round-robins to fleet Sparks. Either way, transcription runs on hardware we own. |
+| `groq` | `GROQ_API_KEY` set | Pay per call (cheap, fast) | `whisper-large-v3`. Used when local listen isn't installed, or `--backend groq`. |
+| `openai` | `OPENAI_API_KEY` set | Pay per call (standard) | `whisper-1`. Used as last cloud fallback, or `--backend openai`. |
+| `cloud` | Either key set | Pay per call | Alias: prefer Groq, fall back to OpenAI. |
 | `--no-asr` | Explicit | n/a | Frames-only, even when audio could've been transcribed. |
 
 The local backend requires the `~/bin/listen` wrapper from the ScrappyLabs fleet. It's a small bash script that talks to an OpenAI-compatible ASR endpoint (Qwen3-ASR locally on Sparks, with `api.scrappylabs.ai` as a fallback). To opt in:
@@ -148,11 +148,11 @@ Captions cover the majority of public videos for free. ASR only kicks in when a 
 
 | Capability | What you need | Cost |
 |------------|---------------|------|
-| Download + native captions | `yt-dlp` + `ffmpeg` | Free |
-| Local-first ASR (default) | `~/bin/listen` from the ScrappyLabs fleet | Free on fleet, flat-rate via API |
-| Cloud Whisper (preferred) | [Groq API key](https://console.groq.com/keys) — `whisper-large-v3` | Cheap, fast |
-| Cloud Whisper (alt) | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing |
-| Disable ASR entirely | `--no-asr` | Free, frames-only when no captions |
+| Download + native captions | `yt-dlp` + `ffmpeg` | $0 (local) |
+| Local-first ASR (default) | `~/bin/listen` from the ScrappyLabs fleet | $0 (all ScrappyLabs infra: fleet Sparks via local socket or our gateway) |
+| Cloud Whisper (preferred) | [Groq API key](https://console.groq.com/keys) — `whisper-large-v3` | Pay per call (cheap, fast) |
+| Cloud Whisper (alt) | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Pay per call (standard) |
+| Disable ASR entirely | `--no-asr` | $0, frames-only when no captions |
 
 ## Usage
 

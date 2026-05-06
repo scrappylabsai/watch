@@ -128,10 +128,10 @@ If the user asked a specific question, answer it directly citing timestamps. If 
 The script gets a timestamped transcript in one of three ways:
 
 1. **Native captions (free, preferred).** yt-dlp pulls manual or auto-generated subtitles from the source platform if available.
-2. **Local-first ASR via `~/bin/listen` (free on the fleet, default).** When `~/bin/listen` is on PATH, the script extracts audio (`ffmpeg -vn -ac 1 -ar 16000 -b:a 64k`, ~0.5 MB/min) and pipes it through `listen --segments`, which:
+2. **Local-first ASR via `~/bin/listen` ($0 — all ScrappyLabs infra, default).** When `~/bin/listen` is on PATH, the script extracts audio (`ffmpeg -vn -ac 1 -ar 16000 -b:a 64k`, ~0.5 MB/min) and pipes it through `listen --segments`, which:
    - tries a local OpenAI-compatible ASR endpoint (Qwen3-ASR on a Spark) first,
-   - falls back to `https://api.scrappylabs.ai/v1/audio/transcriptions` automatically if the local one isn't reachable.
-   No keys are exposed to this process — `listen` handles its own auth.
+   - falls back to `https://api.scrappylabs.ai/v1/audio/transcriptions` if the local one isn't reachable. The gateway round-robins to fleet Sparks, so either way transcription runs on hardware we own.
+   No keys are exposed to this process — `listen` handles its own auth. Zero marginal cost.
 3. **Cloud Whisper API (off-fleet fallback).** If `~/bin/listen` isn't installed (or the user explicitly passes `--backend cloud` / `--backend groq` / `--backend openai`), the same audio is uploaded to a Whisper API:
    - **Groq** — `whisper-large-v3`. Preferred cloud default: cheaper, faster. Get a key at console.groq.com/keys.
    - **OpenAI** — `whisper-1`. Cloud fallback. Get a key at platform.openai.com/api-keys.
