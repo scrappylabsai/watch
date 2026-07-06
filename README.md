@@ -23,7 +23,7 @@ Zero config to start — `yt-dlp` and `ffmpeg` install on first run via `brew` o
 
 Claude can read a webpage, run a script, browse a repo. What it can't do, out of the box, is *watch a video*. You paste a YouTube link and it has to either guess from the title or pull a transcript that's missing 90% of what's on screen.
 
-With `/watch` you can paste a URL or a local path, ask a question, and Claude downloads the video, extracts frames at an auto-scaled rate, pulls a timestamped transcript (free captions when available, local-first ASR as fallback), and `Read`s every frame as an image. By the time it answers, it has *seen* the video and *heard* the audio.
+With `/watch` you can paste a URL or a local path, ask a question, and Claude downloads the video, extracts scene-aware deduplicated frames (every real cut plus a density floor — repeated shots sent once), pulls a timestamped transcript (free captions when available, local-first ASR as fallback), and `Read`s every frame as an image. By the time it answers, it has *seen* the video and *heard* the audio.
 
 ```
 /watch https://youtu.be/dQw4w9WgXcQ what happens at the 30 second mark?
@@ -47,7 +47,7 @@ The fork rewires the audio path. Upstream uploads audio to Groq or OpenAI Whispe
 
 1. **You paste a video and a question.** URL (anything yt-dlp supports — YouTube, Loom, TikTok, X, Instagram, plus a few hundred more) or a local path (`.mp4`, `.mov`, `.mkv`, `.webm`).
 2. **`yt-dlp` downloads it.** For URLs, into a temp working directory. For local files, no download — just probed in place.
-3. **`ffmpeg` extracts frames at an auto-scaled rate.** The frame budget is duration-aware: ≤30s gets ~30 frames, 30-60s gets ~40, 1-3min gets ~60, 3-10min gets ~80, longer gets 100 sparsely. Hard ceilings: 2 fps, 100 frames. JPEGs at 512px wide by default — bump with `--resolution 1024` if Claude needs to read on-screen text.
+3. **`ffmpeg` selects frames by content, not by clock.** One pass keeps every real scene change plus a density floor (at least one frame every N seconds, N auto-scaled to duration), then a sliding-window pixel dedup drops shots Claude has already seen — a static slide collapses to one frame, a fast-cut reel keeps every beat. Survivors are thinned to a duration-aware budget: ≤30s ~30 frames, 30-60s ~40, 1-3min ~60, 3-10min ~80, longer 100 sparsely; static content typically lands 2-3× under those numbers. Hard ceilings: 2 fps, 100 frames. JPEGs at 512px wide by default — bump with `--resolution 1024` if Claude needs to read on-screen text. `--fixed-interval` (or `--fps`) forces the old evenly-spaced sampling.
 4. **The transcript comes from one of three places.** First try: `yt-dlp` pulls native captions (manual or auto-generated) from the source. Free, instant, accurate-ish. Fallback A (preferred): extract a mono 16 kHz audio clip and route it through `~/bin/listen` — local Qwen3-ASR first, ScrappyLabs API second. Fallback B (cloud opt-in): ship that same audio clip to Groq's `whisper-large-v3` or OpenAI's `whisper-1`.
 5. **Frames + transcript are handed to Claude.** The script prints frame paths with `t=MM:SS` markers and the transcript with timestamps. Claude `Read`s each frame in parallel — JPEGs render directly as images in its context.
 6. **Claude answers grounded in what's actually on screen and in the audio.** Not "based on the description" or "according to the title." It saw the frames. It heard the transcript.
@@ -80,7 +80,7 @@ If you don't run anything fleet-shaped, just leave `~/bin/listen` un-installed a
 
 ## Frame budget — why it matters
 
-Token cost is dominated by frames. Every frame is an image; image tokens add up fast. The script's auto-fps logic exists so you don't blow your context budget on a sparse scan of a 30-minute video that would have been better answered by a focused 30-second window.
+Token cost is dominated by frames. Every frame is an image; image tokens add up fast. Scene-aware selection keeps only frames that show something new, and the duration-scaled budget caps the total so you don't blow your context on a sparse scan of a 30-minute video that would have been better answered by a focused 30-second window. Budgets below are caps — static content usually comes in 2-3× under them.
 
 | Duration | Default frame budget | What you get |
 |----------|---------------------|--------------|
@@ -174,7 +174,11 @@ Other knobs (passed to `scripts/watch.py`):
 
 - `--max-frames N` — lower the frame cap for a tighter token budget.
 - `--resolution W` — bump frame width to 1024 px when Claude needs to read on-screen text (slides, terminals, code).
-- `--fps F` — override the auto-fps calculation (still capped at 2 fps).
+- `--scene S` — scene-change sensitivity 0-1 (default 0.30; lower = more candidate frames).
+- `--dedup-threshold P` — % of pixels that must change for a candidate frame to survive dedup (default 8; 0 disables).
+- `--dedup-window N` — compare each candidate against the last N kept frames (default 4).
+- `--fixed-interval` — force legacy evenly-spaced sampling instead of scene-aware selection.
+- `--fps F` — override the auto-fps calculation (still capped at 2 fps; implies `--fixed-interval`).
 - `--backend local|cloud|groq|openai` — force a transcription backend. Default: `local` if `~/bin/listen` exists, else `cloud`.
 - `--no-asr` — disable transcription entirely; frames only. (Old `--no-whisper` still works as an alias.)
 - `--out-dir DIR` — keep working files somewhere specific (default: auto-generated tmp dir).
@@ -201,7 +205,7 @@ watch ~/Movies/clip.mov --backend cloud
 ├── scripts/
 │   ├── watch.py             # entry point — orchestrates download → frames → transcript
 │   ├── download.py          # yt-dlp wrapper
-│   ├── frames.py            # ffmpeg frame extraction + auto-fps logic
+│   ├── frames.py            # scene-aware selection + dedup, fixed-interval fallback
 │   ├── transcribe.py        # VTT parsing + dedupe + range filtering
 │   ├── asr.py               # local-first ASR via ~/bin/listen, cloud Whisper fallback
 │   ├── setup.py             # preflight + installer
@@ -225,7 +229,8 @@ See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ## Credits
 
-- Original work: [`bradautomates/claude-video`](https://github.com/bradautomates/claude-video) — frame budget logic, yt-dlp/ffmpeg orchestration, plugin packaging, the whole shape of the skill. The fork's contribution is the local-first ASR rewire and the symmetric `~/bin/watch` wrapper.
+- Original work: [`bradautomates/claude-video`](https://github.com/bradautomates/claude-video) — frame budget logic, yt-dlp/ffmpeg orchestration, plugin packaging, the whole shape of the skill. The fork's contribution is the local-first ASR rewire, the symmetric `~/bin/watch` wrapper, and scene-aware frame selection.
+- Scene-change + dedup selection technique validated against [`HUANGCHIHHUNGLeo/claude-real-video`](https://github.com/HUANGCHIHHUNGLeo/claude-real-video) (MIT) — independent implementation, same core idea: send the frames that actually differ.
 - Built on `yt-dlp`, `ffmpeg`, and Claude's multimodal `Read` tool.
 - Cloud transcription via [Groq](https://groq.com) or [OpenAI](https://openai.com).
 - Local transcription via Qwen3-ASR served on the ScrappyLabs fleet.

@@ -2,6 +2,20 @@
 
 All notable changes to `/watch` are documented here.
 
+## [1.3.0] — 2026-07-06
+
+### Added
+- **Scene-aware frame selection (new default)**: instead of sampling at a fixed interval, a single ffmpeg pass keeps every frame whose scene-change score exceeds `--scene` (default 0.30) plus a density floor (≥1 frame every N seconds, N auto-scaled to duration ÷ budget, clamped 0.5-10s). Candidates are then deduped by real pixel difference — each 48×48 RGB thumbnail is compared against a sliding window of the last `--dedup-window` (default 4) kept frames, and candidates where fewer than `--dedup-threshold`% (default 8) of pixels changed are dropped — before even thinning to the existing duration-scaled budget. A 27s static screencast now sends ~10 frames instead of 27 with nothing missed; a fast-cut reel catches cuts that land between whole-second sample points. Technique validated side-by-side against `HUANGCHIHHUNGLeo/claude-real-video` (MIT) on identical input; our per-frame timestamps, captions-first transcript, and focused mode are preserved on top of it.
+- New flags on `watch.py` and `frames.py`: `--scene`, `--dedup-threshold`, `--dedup-window`, `--fixed-interval`.
+- Frame timestamps in scene mode come from ffmpeg `showinfo` pts (exact), not index ÷ fps (approximate).
+
+### Changed
+- `--fps` now forces fixed-interval sampling (its behavior is unchanged from 1.2.0 when used).
+- Report line shows selection stats: `N kept of M scene candidates (scene>0.30, floor 1.0s, dedup 8%×4, budget B)`.
+
+### Fallback
+- Scene selection quietly falls back to fixed-interval sampling when ffmpeg fails, produces zero candidates, or hits the candidate cap (pathological strobe cuts), so no video regresses versus 1.2.0.
+
 ## [1.2.0] — 2026-05-05
 
 ### Added

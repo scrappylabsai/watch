@@ -16,7 +16,20 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from download import download, is_url  # noqa: E402
-from frames import MAX_FPS, auto_fps, auto_fps_focus, extract, format_time, get_metadata, parse_time  # noqa: E402
+from frames import (  # noqa: E402
+    DEDUP_THRESHOLD_DEFAULT,
+    DEDUP_WINDOW_DEFAULT,
+    MAX_FPS,
+    SCENE_DEFAULT,
+    auto_fps,
+    auto_fps_focus,
+    extract,
+    extract_scene,
+    format_time,
+    get_metadata,
+    parse_time,
+    scene_floor,
+)
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from asr import resolve_backend, transcribe_video  # noqa: E402
 
@@ -29,7 +42,36 @@ def main() -> int:
     ap.add_argument("source", help="Video URL or local file path")
     ap.add_argument("--max-frames", type=int, default=80, help="Cap on frame count (default 80, hard max 100)")
     ap.add_argument("--resolution", type=int, default=512, help="Frame width in pixels (default 512)")
-    ap.add_argument("--fps", type=float, default=None, help="Override auto-fps")
+    ap.add_argument("--fps", type=float, default=None, help="Override auto-fps (forces fixed-interval sampling)")
+    ap.add_argument(
+        "--scene",
+        type=float,
+        default=SCENE_DEFAULT,
+        help=(
+            "Scene-change sensitivity 0-1 for the default scene-aware selection "
+            "(lower = more candidate frames; default 0.30)"
+        ),
+    )
+    ap.add_argument(
+        "--dedup-threshold",
+        type=float,
+        default=DEDUP_THRESHOLD_DEFAULT,
+        help=(
+            "Percent of pixels that must change vs the recent kept frames for a "
+            "candidate frame to survive dedup (default 8; 0 disables dedup)"
+        ),
+    )
+    ap.add_argument(
+        "--dedup-window",
+        type=int,
+        default=DEDUP_WINDOW_DEFAULT,
+        help="Dedup compares each candidate against the last N kept frames (default 4)",
+    )
+    ap.add_argument(
+        "--fixed-interval",
+        action="store_true",
+        help="Force legacy fixed-interval sampling instead of scene-aware selection",
+    )
     ap.add_argument(
         "--no-frames",
         action="store_true",
@@ -96,6 +138,7 @@ def main() -> int:
     effective_duration = max(0.0, effective_end - effective_start)
     focused = start_sec is not None or end_sec is not None
 
+    selection: dict | None = None
     if args.no_frames:
         fps = 0.0
         target = 0
@@ -114,17 +157,53 @@ def main() -> int:
             f"{format_time(effective_start)}-{format_time(effective_end)} ({effective_duration:.1f}s)"
             if focused else f"full {effective_duration:.1f}s"
         )
-        print(f"[watch] extracting ~{target} frames at {fps:.3f} fps over {scope}…", file=sys.stderr)
 
-        frames = extract(
-            video_path,
-            work / "frames",
-            fps=fps,
-            resolution=args.resolution,
-            max_frames=max_frames,
-            start_seconds=start_sec,
-            end_seconds=end_sec,
-        )
+        use_scene = args.fps is None and not args.fixed_interval
+        if use_scene:
+            floor = scene_floor(effective_duration, target)
+            print(
+                f"[watch] scene-aware selection over {scope}: scene>{args.scene:.2f}, "
+                f"floor {floor:.1f}s, dedup {args.dedup_threshold:.0f}%×{args.dedup_window}, "
+                f"budget {target}…",
+                file=sys.stderr,
+            )
+            selection = extract_scene(
+                video_path,
+                work / "frames",
+                budget=target,
+                scene=args.scene,
+                floor=floor,
+                resolution=args.resolution,
+                dedup_threshold=args.dedup_threshold,
+                dedup_window=args.dedup_window,
+                start_seconds=start_sec,
+                end_seconds=end_sec,
+            )
+            if selection is None:
+                print(
+                    "[watch] scene-aware selection unavailable for this video — "
+                    "falling back to fixed-interval sampling",
+                    file=sys.stderr,
+                )
+            else:
+                frames = selection["frames"]
+                print(
+                    f"[watch] kept {selection['kept']} of {selection['candidates']} "
+                    "candidate frames",
+                    file=sys.stderr,
+                )
+
+        if selection is None:
+            print(f"[watch] extracting ~{target} frames at {fps:.3f} fps over {scope}…", file=sys.stderr)
+            frames = extract(
+                video_path,
+                work / "frames",
+                fps=fps,
+                resolution=args.resolution,
+                max_frames=max_frames,
+                start_seconds=start_sec,
+                end_seconds=end_sec,
+            )
 
     transcript_segments: list[dict] = []
     transcript_text: str | None = None
@@ -187,6 +266,13 @@ def main() -> int:
     mode = "focused" if focused else "full"
     if args.no_frames:
         print("- **Frames:** skipped (`--no-frames`) — transcript-only mode")
+    elif selection is not None:
+        print(
+            f"- **Frames:** {len(frames)} kept of {selection['candidates']} scene candidates, "
+            f"{mode} mode (scene>{selection['scene']:.2f}, floor {selection['floor']:.1f}s, "
+            f"dedup {args.dedup_threshold:.0f}%×{args.dedup_window}, budget {target})"
+        )
+        print(f"- **Frame size:** {args.resolution}px wide")
     else:
         print(f"- **Frames:** {len(frames)} @ {fps:.3f} fps, {mode} mode (budget {target}, max {max_frames})")
         print(f"- **Frame size:** {args.resolution}px wide")

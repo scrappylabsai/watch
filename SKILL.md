@@ -1,6 +1,6 @@
 ---
 name: watch
-description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or local-first ASR via ~/bin/listen, with cloud Whisper fallback), and hands the result to Claude so it can answer questions about what's in the video.
+description: Watch a video (URL or local path). Downloads with yt-dlp, extracts scene-aware deduplicated frames with ffmpeg (every real cut + a density floor, repeated shots sent once), pulls the transcript from captions (or local-first ASR via ~/bin/listen, with cloud Whisper fallback), and hands the result to Claude so it can answer questions about what's in the video.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
 homepage: https://github.com/scrappylabsai/watch
@@ -12,7 +12,7 @@ user-invocable: true
 
 # /watch — Claude watches a video
 
-You don't have a video input; this skill gives you one. A Python script downloads the video, extracts frames as JPEGs, gets a timestamped transcript (native captions first, then local-first ASR via `~/bin/listen`, then optional cloud Whisper as a final fallback), and prints frame paths. You then `Read` each frame path to see the images and combine them with the transcript to answer the user.
+You don't have a video input; this skill gives you one. A Python script downloads the video, extracts scene-aware frames as JPEGs (every real scene change plus a density floor, with near-duplicate shots deduped so you never re-see a frame), gets a timestamped transcript (native captions first, then local-first ASR via `~/bin/listen`, then optional cloud Whisper as a final fallback), and prints frame paths. You then `Read` each frame path to see the images and combine them with the transcript to answer the user.
 
 ## Step 0 — Setup preflight (runs every `/watch` invocation, silent on success)
 
@@ -54,11 +54,22 @@ Within a single session, you can skip Step 0 on follow-up `/watch` calls — onc
 - User points at a local video file (`.mp4`, `.mov`, `.mkv`, `.webm`, etc.) and asks about it.
 - User types `/watch <url-or-path> [question]`.
 
+## Frame selection (scene-aware by default)
+
+Frames are selected by content, not by a fixed clock:
+
+1. **Scene detection** — one ffmpeg pass keeps every frame whose scene-change score exceeds `--scene` (default 0.30), so fast cuts are caught even between whole-second marks.
+2. **Density floor** — at least one frame every N seconds regardless of cuts (N auto-scales: duration ÷ budget, clamped 0.5-10s), so slow screencasts still get coverage.
+3. **Dedup** — each candidate is pixel-diffed (downscaled RGB) against the last `--dedup-window` kept frames (default 4); candidates where fewer than `--dedup-threshold`% of pixels changed (default 8) are dropped. A static slide collapses to one frame; an A-B-A cutaway doesn't re-send shot A.
+4. **Budget thinning** — survivors are evenly thinned to the duration-scaled budget below.
+
+The practical effect: static/talking content comes in **well under** budget (a 27s screencast → ~10 frames instead of 27), while fast-cut reels keep every beat. If scene detection fails or the video is a pathological strobe, the script silently falls back to fixed-interval sampling.
+
 ## Recommended limits
 
 - **Best accuracy: videos under 10 minutes.** Frame coverage scales inversely with duration.
-- **Hard caps: 100 frames total and 2 fps.** Token cost grows with frame count, so the script targets a frame budget by duration (and never exceeds 2 fps even when the budget would imply more):
-  - ≤30s → ~1-2 fps (up to 30 frames)
+- **Hard caps: 100 frames total and 2 fps.** Token cost grows with frame count, so the script caps frames with a budget by duration — scene-aware selection typically comes in under it:
+  - ≤30s → budget ~12-30 frames
   - 30s-1min → ~40 frames
   - 1-3min → ~60 frames
   - 3-10min → ~80 frames
@@ -79,7 +90,11 @@ Optional flags:
 - `--start T` / `--end T` — focus on a section. Accepts `SS`, `MM:SS`, or `HH:MM:SS`. When either is set, fps auto-scales denser (see "Focusing on a section" below).
 - `--max-frames N` — lower the cap for tighter token budget (e.g. `--max-frames 40`)
 - `--resolution W` — change frame width in px (default 512; bump to 1024 only if the user needs to read on-screen text)
-- `--fps F` — override auto-fps (clamped to 2 fps max)
+- `--scene S` — scene-change sensitivity 0-1 (default 0.30; lower = more candidate frames). Drop to ~0.15 if subtle transitions are being missed.
+- `--dedup-threshold P` — % of pixels that must change for a candidate to survive dedup (default 8; `0` disables dedup). Raise to ~15 for noisy/handheld footage that isn't deduping.
+- `--dedup-window N` — compare each candidate against the last N kept frames (default 4)
+- `--fixed-interval` — force legacy evenly-spaced sampling instead of scene-aware selection
+- `--fps F` — override auto-fps (clamped to 2 fps max; implies `--fixed-interval`)
 - `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
 - `--backend local|cloud|groq|openai` — force a specific ASR backend. Default: `local` if `~/bin/listen` exists, else `cloud` (Groq with OpenAI fallback). `--whisper {groq,openai}` is kept as a backwards-compat alias.
 - `--no-asr` — disable the ASR fallback entirely (frames-only if no captions). `--no-whisper` is kept as a backwards-compat alias.
@@ -87,7 +102,7 @@ Optional flags:
 
 ### Focusing on a section (higher frame rate)
 
-When the user asks about a specific moment — "what happens at the 2 minute mark?", "zoom into 0:45 to 1:00", "the first 10 seconds" — pass `--start` and/or `--end`. The script switches to focused-mode budgets, which are denser than full-video budgets (still capped at 2 fps):
+When the user asks about a specific moment — "what happens at the 2 minute mark?", "zoom into 0:45 to 1:00", "the first 10 seconds" — pass `--start` and/or `--end`. Scene-aware selection still applies inside the range, but with denser focused-mode budgets (and thus a tighter density floor; fixed-interval equivalents below, still capped at 2 fps):
 
 - ≤5s → 2 fps (up to 10 frames)
 - 5-15s → 2 fps (up to 30 frames)
@@ -152,6 +167,7 @@ Cloud keys live in `~/.config/watch/.env`. The script prefers Groq when both are
 
 This skill burns tokens primarily on frames. Order of magnitude:
 - 80 frames at 512px wide is roughly 50-80k image tokens depending on aspect ratio.
+- Scene-aware dedup usually lands well under budget on static content (screencasts, slides, talking heads) — expect 2-3× fewer frames than the fixed-interval equivalent with nothing missed.
 - The transcript is cheap (a few thousand tokens at most for a 10-minute video).
 - Bumping `--resolution` to 1024 roughly quadruples the image tokens per frame. Only do it when necessary.
 

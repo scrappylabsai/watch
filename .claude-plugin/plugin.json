@@ -1,7 +1,7 @@
 {
   "name": "watch",
-  "version": "1.0.0",
-  "description": "Let Claude watch a video. Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls captions or routes audio through local-first ASR (~/bin/listen, fleet Qwen3-ASR) with optional cloud Whisper fallback. ScrappyLabs fork of bradautomates/claude-video.",
+  "version": "1.3.0",
+  "description": "Let Claude watch a video. Downloads with yt-dlp, extracts scene-aware deduplicated frames with ffmpeg (every real cut + density floor, repeated shots sent once), pulls captions or routes audio through local-first ASR (~/bin/listen, fleet Qwen3-ASR) with optional cloud Whisper fallback. ScrappyLabs fork of bradautomates/claude-video.",
   "author": {
     "name": "ScrappyLabs",
     "url": "https://scrappylabs.ai"
