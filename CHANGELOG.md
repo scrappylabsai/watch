@@ -2,6 +2,18 @@
 
 All notable changes to `/watch` are documented here.
 
+## [1.4.0] — 2026-07-27
+
+### Added
+- **Optional comment pass (`scripts/comments.py`, Step 2.5)** — pulls a video's public comments via `yt-dlp --write-comments`, ranks top-level comments by likes with their reply threads nested, and tags `CREATOR` / `PINNED` / `HEARTED` so the uploader's own hedges and corrections stand out. **Off by default**; SKILL.md tells the caller to run it only when the video makes a checkable claim (a benchmark number, an "it just works on X", a product demo) and to skip it for self-evidencing content. Costs ~1-2k tokens and runs *before* the frame pass, so it can redirect where the expensive looking happens.
+  - Motivating case: a "DeepSeek V4 Flash — 32 tok/s" video whose on-screen run actually measured 22.3 tok/s at 8K context with KV cache off; the top comment was the reviewer catching the toy config. Frames alone got there slower.
+- Flags: `--max N` (default 25), `--replies`, `--no-gate`, `--json`.
+
+### Security
+- Comments are the **highest-injection-risk surface this skill touches** — unlike captions they're arbitrary strangers writing into a channel an agent then reads. All fetched comment text is piped through the fleet gate `scan-untrusted` (local regex pre-filter + AgentWorld model when up) and the verdict is printed in the output header. Non-`INERT` prints a loud data-not-instructions banner; `UNGATED` (model down) is surfaced rather than silently passed.
+- SKILL.md adds guidance to treat comment content as *claims by strangers*, weigh it by likes/specificity, cross-check against frames and transcript, and attribute it when repeating it.
+- Fetch is read-only and login-less; comment JSON lands in a `TemporaryDirectory` that is deleted on exit. Local file paths short-circuit with no network call.
+
 ## [1.3.0] — 2026-07-06
 
 ### Added
